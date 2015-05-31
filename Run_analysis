@@ -1,0 +1,124 @@
+## Use this code after download the DEIS data from "http://www.deis.cl/?p=1020"
+
+install.packages("dplyr")
+library(dplyr)
+
+## DALY = YLL + YLD
+
+## YLL
+# Working with the DEF (defunctions) data 
+#(before this it is necessary convert the original file to .csv file)
+# Read the .csv file
+DEFdata<-read.csv("DEF_2011.csv",sep=",")
+
+# Cleaning some columns
+names(DEFdata)[21]="DIAG_A"
+DEFdataCOL<-DEFdata[,c("SEXO","EDAD_CANT","ANO1_NAC","ANO2_NAC","ANO_DEF","COMUNA","DIAG_A")]
+
+# Filter to select only studied area: codes 13101 to 13132, 13201 & 13401
+DEFdataOK<-subset(DEFdataCOL,grepl("^131|^13201|^13401",DEFdataCOL$COMUNA))
+
+# Filter to select only de diagnosis (DIAG_A) associated to IHD = ICD-10: I20 to I25
+DEFdataOK2<-subset(DEFdataOK,grepl("^I20|^I21|^I22|^I23|^I24|^I25",DEFdataOK$DIAG_A))
+
+# Joining birth years (ANO_NAC) and fix gaps
+cont<-length(DEFdataOK2[,4])
+for (i in 1:cont)
+{
+  if (nchar(DEFdataOK2[i,4])==1) {DEFdataOK2[i,8]<-paste(DEFdataOK2[i,3],"0",DEFdataOK2[i,4])}  
+  if (nchar(DEFdataOK2[i,4])==2) {DEFdataOK2[i,8]<-paste(DEFdataOK2[i,3],DEFdataOK2[i,4])}
+  DEFdataOK2[i,8]<-gsub(" ","",DEFdataOK2[i,8],fixed = TRUE)
+}                              
+names(DEFdataOK2)[8]="ANO_NAC"
+
+# download Life Expectancy data and work with his .htm file
+install.packages("XML")
+library(XML)
+url<-htmlParse("http://deis.minsal.cl/deis/ev/esperanza_de_vida/esperanza_de_vida_por_quinquenios_sexo.htm")
+LIFEexpect.table<-readHTMLTable(url,stringsAsFactors = FALSE)
+LIFEexpect<-data.frame(cbind(LIFEexpect.table[[1]][1],LIFEexpect.table[[1]][3],LIFEexpect.table[[1]][4]))
+LIFEexpectOK<-LIFEexpect[10:22,1:3]
+names(LIFEexpectOK)[1]="Periodos" 
+names(LIFEexpectOK)[2]="Hombres"
+names(LIFEexpectOK)[3]="Mujeres"
+LIFEexpectOK$Hombres<-gsub(",",".",LIFEexpectOK$Hombres,fixed = TRUE)
+LIFEexpectOK$Mujeres<-gsub(",",".",LIFEexpectOK$Mujeres,fixed = TRUE)
+
+# Sort DEF data by gender (SEXO) and age (EDAD_CANT)
+DEFdataOK2<-arrange(DEFdataOK2,SEXO,EDAD_CANT)
+
+# Associate Life Expectancy for each person in order his respective birth year (ANO_NAC)
+DEFdataOK2[,9]<-(ceiling(as.numeric(DEFdataOK2$ANO_NAC)/5-389.9)) # eq. for assignment a row from LIFEexpect data frame
+cant<-length(DEFdataOK2[,9])
+for (i in 1:cant)
+{
+  if (DEFdataOK2[i,9]<1) {DEFdataOK2[i,9]=1}
+}
+
+# YLL for men
+YLLmen<-filter(DEFdataOK2,DEFdataOK2$SEXO==1)
+YLLmen[,10]<-LIFEexpectOK[YLLmen[,9],2]
+YLLmen[,11]<-as.numeric(YLLmen[,10])-YLLmen$EDAD_CANT
+ind<-YLLmen[,11]>0
+sumYLLmen<-sum(YLLmen[ind,11])
+
+# YLL for women
+YLLwomen<-filter(DEFdataOK2,DEFdataOK2$SEXO==2)
+YLLwomen[,10]<-LIFEexpectOK[YLLwomen[,9],3]
+YLLwomen[,11]<-as.numeric(YLLwomen[,10])-YLLwomen$EDAD_CANT
+ind2<-YLLwomen[,11]>0
+sumYLLwomen<-sum(YLLwomen[ind2,11])
+
+# YLL total
+YLL<-sumYLLmen+sumYLLwomen
+
+## YLD
+
+# Working with the EGR (Hospital expenditures) data
+# Read .dbf file
+install.packages("foreign")
+library(foreign)
+EGRdata<-read.dbf("EGR_2011.dbf", as.is = FALSE)
+
+# Cleaning some columns
+names(EGRdata)[12]="DIAG_A"
+EGRdataCOL<-EGRdata[,c("SEXO","EDAD","COMUNA","FECHA_EGR","DIAG_A","COND_EGR")]
+
+# Filter to select only studied area: codes 13101 to 13132, 13201 & 13401
+EGRdataOK<-subset(EGRdataCOL, grepl("^131|^13201|^13401", EGRdataCOL$COMUNA))
+
+# Filter to select only de diagnosis (DIAG_A) associated to IHD = ICD-10: I20 to I25
+EGRdataOK2<-subset(EGRdataOK,grepl("^I20|^I21|^I22|^I23|^I24|^I25",EGRdataOK$DIAG_A))
+
+# Subsetting cases: 1=live; 2=dead
+factor_EGR_dead<-EGRdataOK2$COND_EGR==2
+EGRdead<-EGRdataOK2[t(factor_EGR_dead),]  #These dead people were not considerated in the calculations
+EGRlive<-EGRdataOK2[!t(factor_EGR_dead),]
+
+# YLD for men
+numYLDmen<-sum(EGRlive$SEXO==1)
+YLDmen<-numYLDmen*0.35  # DW = 0.35 for IHD
+
+# YLD for women
+numYLDwomen<-sum(EGRlive$SEXO==2)
+YLDwomen<-numYLDwomen*0.35
+
+# YLD
+YLD = YLDmen+YLDwomen
+
+## DALY IHD STGO 2011
+DALY = YLL+YLD
+DALYmen = sumYLLmen+YLDmen
+DALYwomen = sumYLLwomen+YLDwomen
+
+## DALY IHD ATTRIBUTABLE TO ROAD TRAFFIC NOISE
+DALYnoise = DALY*0.039715 # PAF = 4%
+DALYnoiseMEN = DALYmen*0.039715
+DALYnoiseWOMEN = DALYwomen*0.039715
+
+
+## Others results
+promDEADgender<-tapply(DEFdataOK2$EDAD_CANT,DEFdataOK2$SEXO,mean) #1:MEN   2:WOMEN
+promLIVEgender<-tapply(EGRlive$EDAD,EGRlive$SEXO,mean)            #1:MEN   2:WOMEN
+promDEAD<-mean(DEFdataOK2$EDAD_CANT)
+promLIVE<-mean(EGRlive$EDAD)
